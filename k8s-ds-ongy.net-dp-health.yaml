@@ -1,0 +1,71 @@
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ongy.net-device-plugin-config
+  namespace: kube-system
+data:
+  config: |
+    devices:
+      zigbee:
+        hostPath: /dev/serial/by-id/usb-Silicon_Labs_BV_2010_10_01372208-if00-port0
+        containerPath: /dev/ttyUSB0
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: ongy.net-device-plugin-daemonset
+  namespace: kube-system
+spec:
+  selector:
+    matchLabels:
+      name: ongy.net-dp-ds
+  template:
+    metadata:
+      labels:
+        name: ongy.net-dp-ds
+    spec:
+      priorityClassName: system-node-critical
+      tolerations:
+      - key: CriticalAddonsOnly
+        operator: Exists
+      containers:
+      - image: ongy.net/device-plugin:alpha1
+        imagePullPolicy: Never
+        name: ongy-net-dp-cntr-health
+        workingDir: /root/
+        command: ["./k8s-device-plugin"]
+        args: ["-logtostderr=true", "-stderrthreshold=INFO", "-v=5"] #, "-pulse=2"]
+        securityContext:
+          privileged: true #Needed for /dev
+          capabilities:
+            drop: ["ALL"]
+        volumeMounts:
+          - name: dp
+            mountPath: /var/lib/kubelet/device-plugins
+          - name: sys
+            mountPath: /sys
+          - name: dev
+            mountPath: /dev
+          - name: config
+            mountPath: /config
+      volumes:
+        - name: dp
+          hostPath:
+            path: /var/lib/kubelet/device-plugins
+        - name: sys
+          hostPath:
+            path: /sys
+        - name: dev # Needed for health check
+          hostPath:
+            path: /dev
+        # You set volumes at the Pod level, then mount them into containers inside that Pod
+        - name: config
+          configMap:
+            # Provide the name of the ConfigMap you want to mount.
+            name: ongy.net-device-plugin-config
+            # An array of keys from the ConfigMap to create as files
+            items:
+            - key: "config"
+              path: "config.yaml"
+---
