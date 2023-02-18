@@ -8,7 +8,8 @@ data:
   config: |
     devices:
       zigbee:
-        hostPath: /dev/serial/by-id/usb-Silicon_Labs_BV_2010_10_01372208-if00-port0
+        hostPaths:
+        - /dev/serial/by-id/usb-Silicon_Labs_BV_2010_10_01372208-if00-port0
         containerPath: /dev/ttyUSB0
 ---
 apiVersion: apps/v1

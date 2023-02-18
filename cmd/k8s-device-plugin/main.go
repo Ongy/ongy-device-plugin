@@ -16,9 +16,14 @@ import (
 	pluginapi "k8s.io/kubelet/pkg/apis/deviceplugin/v1beta1"
 )
 
+type currentDevices struct {
+	pluginName string
+	devices    []string
+}
+
 type PluginDeviceConfig struct {
-	HostPath      string `yaml:"hostPath"`
-	ContainerPath string `yaml:"containerPath"`
+	HostPaths     []string `yaml:"hostPaths"`
+	ContainerPath string   `yaml:"containerPath"`
 }
 
 type PluginConfig struct {
@@ -28,7 +33,7 @@ type PluginConfig struct {
 // Plugin is identical to DevicePluginServer interface of device plugin API.
 type Plugin struct {
 	Device    PluginDeviceConfig
-	Heartbeat chan bool
+	Heartbeat chan []string
 }
 
 // Start is an optional interface that could be implemented by plugin.
@@ -37,7 +42,7 @@ type Plugin struct {
 // method could be used to prepare resources before they are offered
 // to Kubernetes.
 func (p *Plugin) Start() error {
-	glog.Infof("Starting plugin: %s", p.Device.HostPath)
+	glog.Infof("Starting plugin: %v", p.Device.HostPaths)
 	return nil
 }
 
@@ -46,7 +51,7 @@ func (p *Plugin) Start() error {
 // plugin is unregistered from kubelet. This method could be used to tear
 // down resources.
 func (p *Plugin) Stop() error {
-	glog.Infof("Stopping plugin: %s", p.Device.HostPath)
+	glog.Infof("Stopping plugin: %v", p.Device.HostPaths)
 	return nil
 }
 
@@ -87,22 +92,29 @@ func (p *Plugin) ListAndWatch(e *pluginapi.Empty, s pluginapi.DevicePlugin_ListA
 	// }()
 
 	// s.Send(&pluginapi.ListAndWatchResponse{Devices: devs})
-	devices := []*pluginapi.Device{{
-		ID:     p.Device.HostPath,
-		Health: pluginapi.Healthy,
-	}}
-	glog.Infof("Reporting device with id %s", p.Device.HostPath)
-	s.Send(&pluginapi.ListAndWatchResponse{Devices: devices})
+	//	devices := []*pluginapi.Device{{
+	//		ID:     p.Device.HostPath,
+	//		Health: pluginapi.Healthy,
+	//	}}
+	glog.Infof("Reporting device with id %v", p.Device.HostPaths)
+	//	s.Send(&pluginapi.ListAndWatchResponse{Devices: devices})
 
 	for {
 		select {
 		case beat := <-p.Heartbeat:
-			if !beat {
+			if len(beat) == 0 {
 				s.Send(&pluginapi.ListAndWatchResponse{Devices: []*pluginapi.Device{}})
-				glog.Infof("Exiting plugin (1): %s", p.Device.HostPath)
+				glog.Infof("Exiting plugin (1): %s", p.Device.HostPaths)
 				return nil
 			}
 
+			devices := make([]*pluginapi.Device, len(beat))
+			for i, device := range beat {
+				devices[i] = &pluginapi.Device{
+					ID:     device,
+					Health: pluginapi.Healthy,
+				}
+			}
 			s.Send(&pluginapi.ListAndWatchResponse{Devices: devices})
 		}
 	}
@@ -150,7 +162,7 @@ func (p *Plugin) Allocate(ctx context.Context, r *pluginapi.AllocateRequest) (*p
 // namespace, monitor available resources and instantate a new plugin for them.
 type Lister struct {
 	Config        PluginConfig
-	ResUpdateChan chan dpm.PluginNameList
+	ResUpdateChan chan []currentDevices
 	Heartbeat     chan bool
 	Plugins       map[string]*Plugin
 }
@@ -173,17 +185,17 @@ func (l *Lister) Discover(pluginListCh chan dpm.PluginNameList) {
 		case newResourcesList := <-l.ResUpdateChan: // New resources found
 			newResources := []string{}
 			for _, resource := range newResourcesList {
-				if val, ok := l.Plugins[resource]; ok {
-					val.Heartbeat <- true
+				if val, ok := l.Plugins[resource.pluginName]; ok {
+					val.Heartbeat <- resource.devices
 				} else {
-					newResources = append(newResources, resource)
+					newResources = append(newResources, resource.pluginName)
 				}
 			}
 
 			for k, p := range l.Plugins {
-				if !slices.Contains(newResourcesList, k) {
+				if !slices.ContainsFunc[currentDevices](newResourcesList, func(resource currentDevices) bool { return resource.pluginName == k }) {
 					glog.Infof("Removing devices for '%s'", k)
-					p.Heartbeat <- false
+					p.Heartbeat <- []string{}
 					delete(l.Plugins, k)
 				}
 			}
@@ -205,7 +217,7 @@ func (l *Lister) Discover(pluginListCh chan dpm.PluginNameList) {
 func (l *Lister) NewPlugin(resourceLastName string) dpm.PluginInterface {
 	plugin := &Plugin{
 		Device:    l.Config.Devices[resourceLastName],
-		Heartbeat: make(chan bool),
+		Heartbeat: make(chan []string),
 	}
 
 	l.Plugins[resourceLastName] = plugin
@@ -254,7 +266,7 @@ func main() {
 	}
 
 	l := Lister{
-		ResUpdateChan: make(chan dpm.PluginNameList),
+		ResUpdateChan: make(chan []currentDevices),
 		Heartbeat:     make(chan bool),
 		Config:        configOrDie(configPath),
 		Plugins:       make(map[string]*Plugin),
@@ -275,13 +287,20 @@ func main() {
 		for {
 			select {
 			case <-l.Heartbeat:
-				lastNames := []string{}
+				lastNames := []currentDevices{}
 				for lastName, device := range l.Config.Devices {
-					if _, err := os.Stat(device.HostPath); errors.Is(err, os.ErrNotExist) {
-						//glog.Infof("Didn't find device for '%s'", lastName)
-						continue
+					found := []string{}
+					for _, hostpath := range device.HostPaths {
+						if _, err := os.Stat(hostpath); errors.Is(err, os.ErrNotExist) {
+							//glog.Infof("Didn't find device for '%s'", lastName)
+							continue
+						}
+						found = append(found, hostpath)
 					}
-					lastNames = append(lastNames, lastName)
+
+					if len(found) > 0 {
+						lastNames = append(lastNames, currentDevices{pluginName: lastName, devices: found})
+					}
 				}
 
 				l.ResUpdateChan <- lastNames
