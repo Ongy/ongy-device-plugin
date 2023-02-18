@@ -6,9 +6,11 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"time"
 
 	"github.com/golang/glog"
 	"github.com/kubevirt/device-plugin-manager/pkg/dpm"
+	"golang.org/x/exp/slices"
 	"golang.org/x/net/context"
 	yaml "gopkg.in/yaml.v3"
 	pluginapi "k8s.io/kubelet/pkg/apis/deviceplugin/v1beta1"
@@ -94,9 +96,10 @@ func (p *Plugin) ListAndWatch(e *pluginapi.Empty, s pluginapi.DevicePlugin_ListA
 
 	for {
 		select {
-		case <-p.Heartbeat:
-			//var health = pluginapi.Unhealthy
-			if _, err := os.Stat(p.Device.HostPath); errors.Is(err, os.ErrNotExist) {
+		case beat := <-p.Heartbeat:
+			if !beat {
+				s.Send(&pluginapi.ListAndWatchResponse{Devices: []*pluginapi.Device{}})
+				glog.Infof("Exiting plugin (1): %s", p.Device.HostPath)
 				return nil
 			}
 
@@ -149,6 +152,7 @@ type Lister struct {
 	Config        PluginConfig
 	ResUpdateChan chan dpm.PluginNameList
 	Heartbeat     chan bool
+	Plugins       map[string]*Plugin
 }
 
 // GetResourceNamespace must return namespace (vendor ID) of implemented Lister. e.g. for
@@ -167,7 +171,27 @@ func (l *Lister) Discover(pluginListCh chan dpm.PluginNameList) {
 	for {
 		select {
 		case newResourcesList := <-l.ResUpdateChan: // New resources found
-			pluginListCh <- newResourcesList
+			newResources := []string{}
+			for _, resource := range newResourcesList {
+				if val, ok := l.Plugins[resource]; ok {
+					val.Heartbeat <- true
+				} else {
+					newResources = append(newResources, resource)
+				}
+			}
+
+			for k, p := range l.Plugins {
+				if !slices.Contains(newResourcesList, k) {
+					glog.Infof("Removing devices for '%s'", k)
+					p.Heartbeat <- false
+					delete(l.Plugins, k)
+				}
+			}
+
+			if len(newResources) > 0 {
+				glog.Infof("Found devices for '%v'", newResources)
+				pluginListCh <- newResources
+			}
 		case <-pluginListCh: // Stop message received
 			// Stop resourceUpdateCh
 			return
@@ -179,10 +203,13 @@ func (l *Lister) Discover(pluginListCh chan dpm.PluginNameList) {
 // e.g. for resource name "color.example.com/red" that would be "red". It must return valid
 // implementation of a PluginInterface.
 func (l *Lister) NewPlugin(resourceLastName string) dpm.PluginInterface {
-	return &Plugin{
+	plugin := &Plugin{
 		Device:    l.Config.Devices[resourceLastName],
-		Heartbeat: l.Heartbeat,
+		Heartbeat: make(chan bool),
 	}
+
+	l.Plugins[resourceLastName] = plugin
+	return plugin
 }
 
 var gitDescribe string
@@ -215,9 +242,9 @@ func main() {
 		fmt.Fprintln(os.Stderr, "Usage:")
 		flag.PrintDefaults()
 	}
-	//var pulse int
+	var pulse int
 	var configPath string
-	//flag.IntVar(&pulse, "pulse", 0, "time between health check polling in seconds.  Set to 0 to disable.")
+	flag.IntVar(&pulse, "pulse", 1, "time between health check polling in seconds.  Set to 0 to disable.")
 	flag.StringVar(&configPath, "config-path", "/config/config.yaml", "Path to the config file.")
 	// this is also needed to enable glog usage in dpm
 	flag.Parse()
@@ -230,31 +257,38 @@ func main() {
 		ResUpdateChan: make(chan dpm.PluginNameList),
 		Heartbeat:     make(chan bool),
 		Config:        configOrDie(configPath),
+		Plugins:       make(map[string]*Plugin),
 	}
 	manager := dpm.NewManager(&l)
 
-	//	if pulse > 0 {
-	//		go func() {
-	//			glog.Infof("Heart beating every %d seconds", pulse)
-	//			for {
-	//				time.Sleep(time.Second * time.Duration(pulse))
-	//				l.Heartbeat <- true
-	//			}
-	//		}()
-	//	}
+	if pulse > 0 {
+		go func() {
+			glog.Infof("Heart beating every %d seconds", pulse)
+			for {
+				time.Sleep(time.Second * time.Duration(pulse))
+				l.Heartbeat <- true
+			}
+		}()
+	}
 
 	go func() {
-		lastNames := []string{}
-		for lastName, device := range l.Config.Devices {
-			if _, err := os.Stat(device.HostPath); errors.Is(err, os.ErrNotExist) {
-				glog.Infof("Didn't find device for '%s'", lastName)
-				continue
-			}
-			glog.Infof("Found device for '%s'", lastName)
-			lastNames = append(lastNames, lastName)
-		}
+		for {
+			select {
+			case <-l.Heartbeat:
+				lastNames := []string{}
+				for lastName, device := range l.Config.Devices {
+					if _, err := os.Stat(device.HostPath); errors.Is(err, os.ErrNotExist) {
+						//glog.Infof("Didn't find device for '%s'", lastName)
+						continue
+					}
+					lastNames = append(lastNames, lastName)
+				}
 
-		l.ResUpdateChan <- lastNames
+				l.ResUpdateChan <- lastNames
+			}
+		}
 	}()
+	l.Heartbeat <- true
+
 	manager.Run()
 }
