@@ -193,7 +193,7 @@ func (l *Lister) Discover(pluginListCh chan dpm.PluginNameList) {
 			}
 
 			for k, p := range l.Plugins {
-				if !slices.ContainsFunc[currentDevices](newResourcesList, func(resource currentDevices) bool { return resource.pluginName == k }) {
+				if !slices.ContainsFunc(newResourcesList, func(resource currentDevices) bool { return resource.pluginName == k }) {
 					glog.Infof("Removing devices for '%s'", k)
 					p.Heartbeat <- []string{}
 					delete(l.Plugins, k)
