@@ -9,8 +9,8 @@ data:
     devices:
       zigbee:
         hostPaths:
-        - /dev/serial/by-id/usb-Silicon_Labs_BV_2010_10_01372208-if00-port0
-        containerPath: /dev/ttyUSB0
+        - /dev/serial/by-id/usb-Texas_Instruments_TI_CC2531_USB_CDC___0X00124B0018E27DB1-if00
+        containerPath: /dev/ACM0
 ---
 apiVersion: apps/v1
 kind: DaemonSet
@@ -31,8 +31,7 @@ spec:
       - key: CriticalAddonsOnly
         operator: Exists
       containers:
-      - image: ongy.net/device-plugin:alpha1
-        imagePullPolicy: Never
+      - image: cr.local.ongy.net/device-plugin:alpha1
         name: ongy-net-dp-cntr-health
         workingDir: /root/
         command: ["./k8s-device-plugin"]
