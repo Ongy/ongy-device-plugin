@@ -104,8 +104,9 @@ func (p *Plugin) ListAndWatch(e *pluginapi.Empty, s pluginapi.DevicePlugin_ListA
 		case beat := <-p.Heartbeat:
 			if len(beat) == 0 {
 				s.Send(&pluginapi.ListAndWatchResponse{Devices: []*pluginapi.Device{}})
-				glog.Infof("Exiting plugin (1): %s", p.Device.HostPaths)
-				return nil
+				glog.Infof("Not Exiting plugin (1): %s", p.Device.HostPaths)
+				continue
+				//return nil
 			}
 
 			devices := make([]*pluginapi.Device, len(beat))
@@ -215,6 +216,7 @@ func (l *Lister) Discover(pluginListCh chan dpm.PluginNameList) {
 // e.g. for resource name "color.example.com/red" that would be "red". It must return valid
 // implementation of a PluginInterface.
 func (l *Lister) NewPlugin(resourceLastName string) dpm.PluginInterface {
+	glog.Infof("Allocating device for %s", resourceLastName)
 	plugin := &Plugin{
 		Device:    l.Config.Devices[resourceLastName],
 		Heartbeat: make(chan []string),
